@@ -60,7 +60,7 @@ DEFAULT_CONFIG = {
     "grad_weight_fm": 150.0,
     "grad_balancer_ema_decay": 0.995,
     "use_amp": True,
-    "num_workers": 0,
+    "num_workers": 4,
     "n_steps": 10000,
     "warmup_steps": 5000,
     "save_interval": 2000,
