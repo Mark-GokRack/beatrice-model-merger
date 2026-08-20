@@ -52,11 +52,11 @@ At each `save_interval`, the distiller writes a training checkpoint and a `parap
 Beatrice `2.0.0-rc.0` paraphernalia directories, including models containing
 multiple voices.
 
-The build downloads the official `beatrice.lib` to
-`beatrice-vst/lib/beatricelib/beatrice.lib` when it is not already present.
-Install CMake, a C++20 compiler compatible with the library, and pybind11 in
-the Python environment used by the distiller. On Windows, build it from this
-directory as follows:
+The build downloads the platform-specific official library to
+`beatrice-vst/lib/beatricelib/` when it is not already present. Windows uses
+`beatrice.lib`; Unix platforms use `libbeatrice.a`. Install CMake, a C++20
+compiler compatible with the library, and pybind11 in the Python environment
+used by the distiller. On Windows, build it from this directory as follows:
 
 ```powershell
 python -m pip install pybind11
@@ -64,10 +64,30 @@ cmake -S native -B native/build -A x64 -Dpybind11_DIR="$(python -m pybind11 --cm
 cmake --build native/build --config Release
 ```
 
-The CMake project selects `/MT` automatically because it must match the
-official Windows library. The resulting `_beatrice_inference` extension is
-written directly into this directory. Use a separate `Converter` instance for
-each teacher model because each instance owns its streaming inference state.
+On macOS, use the default Unix generator:
+
+```bash
+python -m pip install pybind11
+cmake -S native -B native/build -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+cmake --build native/build --config Release
+```
+
+The CMake project selects `/MT` automatically on Windows because it must match
+the official Windows library. The macOS archive is downloaded with its native
+Apple archive index. On Linux and other non-Apple Unix platforms, provide a
+compatible `libbeatrice.a` because the distributed archive is macOS arm64:
+
+```bash
+cmake -S native -B native/build \
+  -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
+  -DBEATRICE_LIBRARY=/path/to/libbeatrice.a
+cmake --build native/build --config Release
+```
+
+The Unix build adds a static archive index where needed. The resulting
+`_beatrice_inference` extension is written directly into this directory. Use a
+separate `Converter` instance for each teacher model because each instance owns
+its streaming inference state.
 
 ```python
 from pathlib import Path
