@@ -357,7 +357,7 @@ def export_paraphernalia(
     export_pitch_estimator.merge_weights()
     export_pitch_estimator.half()
     export_pitch_estimator.dump(output_dir / "pitch_estimator.bin")
-    shutil.copy(repo_root() / "assets" / "images" / "noimage.png", output_dir / "noimage.png")
+    shutil.copy(repo_root() / "beatrice-trainer" / "assets" / "images" / "noimage.png", output_dir / "noimage.png")
     write_merged_toml(output_dir, teachers)
 
 
