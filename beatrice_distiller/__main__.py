@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import torch
 import torchaudio
 from torch.nn import functional as F
@@ -69,6 +70,7 @@ DEFAULT_CONFIG = {
     "segment_length": 100,
     "phone_noise_ratio": 0.5,
     "vq_topk": 4,
+    "vq_init_from_bin": True,
     "vq_init_max_files": 128,
     "vq_init_wav_length": 16000,
     "training_time_vq": "none",
@@ -211,6 +213,12 @@ REQUIRED_MODEL_FILES = {
     "speaker_embeddings.bin",
 }
 VOICE_TABLE_RE = re.compile(r"(?m)^\[voice\.(\d+)\]\s*$")
+CODEBOOK_SIZE = 512
+PHONE_CHANNELS = 128
+FORMANT_EMBEDDING_COUNT = 9
+HIDDEN_CHANNELS = 256
+KEY_VALUE_EMBEDDING_LENGTH = 384
+KEY_VALUE_EMBEDDING_CHANNELS = 128
 
 
 def find_source_files(data_dir: Path) -> list[Path]:
@@ -233,12 +241,52 @@ def find_teachers(weights_dir: Path) -> list[tuple[Path, int, dict]]:
             raise ValueError(f"Expected exactly one TOML file in teacher model directory: {model_dir}")
         with open(toml_files[0], "rb") as file:
             metadata = tomllib.load(file)
+        model_metadata = metadata.get("model", {})
+        model_version = model_metadata.get("version") if isinstance(model_metadata, dict) else None
+        if model_version != PARAPHERNALIA_VERSION:
+            raise ValueError(
+                f"Teacher model version must be {PARAPHERNALIA_VERSION}, "
+                f"but {model_dir} declares {model_version!r}"
+            )
         voices = metadata.get("voice", {})
         for voice_id in sorted((int(key) for key in voices)):
             teachers.append((model_dir, voice_id, {"toml_file": toml_files[0], "voice": voices[str(voice_id)]}))
     if not teachers:
         raise ValueError(f"No teacher paraphernalia directories found under {weights_dir}")
     return teachers
+
+
+def load_teacher_codebooks(teachers: list[tuple[Path, int, dict]]) -> torch.Tensor:
+    """Load each selected teacher voice's codebook from speaker_embeddings.bin."""
+    codebook_elements = CODEBOOK_SIZE * PHONE_CHANNELS
+    per_speaker_elements = (
+        codebook_elements
+        + HIDDEN_CHANNELS
+        + KEY_VALUE_EMBEDDING_LENGTH * KEY_VALUE_EMBEDDING_CHANNELS
+    )
+    formant_elements = FORMANT_EMBEDDING_COUNT * HIDDEN_CHANNELS
+    codebooks = []
+
+    for model_dir, teacher_speaker_id, _ in teachers:
+        embedding_file = model_dir / "speaker_embeddings.bin"
+        values = np.fromfile(embedding_file, dtype=np.float16)
+        if values.size < formant_elements or (values.size - formant_elements) % per_speaker_elements:
+            raise ValueError(f"Invalid speaker_embeddings.bin: {embedding_file}")
+        n_speakers = (values.size - formant_elements) // per_speaker_elements
+        if teacher_speaker_id >= n_speakers:
+            raise ValueError(
+                f"Teacher speaker {teacher_speaker_id} is not present in {embedding_file}"
+            )
+        start = teacher_speaker_id * codebook_elements
+        codebooks.append(
+            torch.from_numpy(
+                values[start : start + codebook_elements]
+                .reshape(CODEBOOK_SIZE, PHONE_CHANNELS)
+                .copy()
+            )
+        )
+
+    return torch.stack(codebooks)
 
 
 def make_examples(source_files: Iterable[Path], teachers: list[tuple[Path, int, dict]]) -> list[tuple[Path, Path, int, int]]:
@@ -362,12 +410,13 @@ def main() -> None:
     source_files = find_source_files(args.data_dir)
     teachers = find_teachers(args.weights_dir)
     examples = make_examples(source_files, teachers)
-    if h.vq_init_max_files < 1:
-        raise ValueError("vq_init_max_files must be at least 1")
-    if h.vq_init_wav_length < h.in_sample_rate // 100:
-        raise ValueError("vq_init_wav_length must contain at least one 10 ms frame")
-    if h.vq_init_wav_length % (h.in_sample_rate // 100) != 0:
-        raise ValueError("vq_init_wav_length must be a multiple of the 10 ms frame length")
+    if not h.vq_init_from_bin:
+        if h.vq_init_max_files < 1:
+            raise ValueError("vq_init_max_files must be at least 1")
+        if h.vq_init_wav_length < h.in_sample_rate // 100:
+            raise ValueError("vq_init_wav_length must contain at least one 10 ms frame")
+        if h.vq_init_wav_length % (h.in_sample_rate // 100) != 0:
+            raise ValueError("vq_init_wav_length must be a multiple of the 10 ms frame length")
     print(f"device={device}; sources={len(source_files)}; speakers={len(teachers)}; examples={len(examples)}")
     for speaker_id, (model_dir, teacher_speaker_id, teacher) in enumerate(teachers):
         print(f"  {speaker_id}: {teacher['voice'].get('name', f'{model_dir.name}:{teacher_speaker_id}')} ({model_dir})")
@@ -397,23 +446,35 @@ def main() -> None:
     net_g.load_state_dict(prepare_pretrained_generator(pretrained, len(teachers)), strict=False)
     net_d.load_state_dict(pretrained["net_d"], strict=False)
 
-    # Bound the activation set so K-means does not materialize a GPU-sized corpus.
-    vq_source_files = [
-        source_files[index * len(source_files) // min(len(source_files), h.vq_init_max_files)]
-        for index in range(min(len(source_files), h.vq_init_max_files))
-    ]
+    if h.vq_init_from_bin:
+        codebooks = load_teacher_codebooks(teachers)
+        expected_shape = (len(teachers), net_g.vq.codebook_size, net_g.vq.channels)
+        if tuple(codebooks.shape) != expected_shape:
+            raise ValueError(
+                f"Loaded codebooks have shape {tuple(codebooks.shape)}, "
+                f"expected {expected_shape}"
+            )
+        with torch.no_grad():
+            net_g.vq.codebooks.copy_(codebooks.to(device))
+        net_g.enable_hook()
+    else:
+        # Bound the activation set so K-means does not materialize a GPU-sized corpus.
+        vq_source_files = [
+            source_files[index * len(source_files) // min(len(source_files), h.vq_init_max_files)]
+            for index in range(min(len(source_files), h.vq_init_max_files))
+        ]
 
-    # Codebooks describe the 16 kHz targets generated by each teacher voice.
-    def wav_iterator(speaker_id: int):
-        for source_file in vq_source_files:
-            source, sample_rate = dataset._load_mono(source_file)
-            source = get_resampler(sample_rate, h.in_sample_rate)(source).squeeze(0)
-            model_dir, teacher_speaker_id, _ = teachers[speaker_id]
-            target = dataset._generate_target(source, model_dir, teacher_speaker_id)
-            target = get_resampler(h.out_sample_rate, h.in_sample_rate)(target[None]).squeeze(0)
-            yield target[: h.vq_init_wav_length].to(device)[None, None]
+        # Codebooks describe the 16 kHz targets generated by each teacher voice.
+        def wav_iterator(speaker_id: int):
+            for source_file in vq_source_files:
+                source, sample_rate = dataset._load_mono(source_file)
+                source = get_resampler(sample_rate, h.in_sample_rate)(source).squeeze(0)
+                model_dir, teacher_speaker_id, _ = teachers[speaker_id]
+                target = dataset._generate_target(source, model_dir, teacher_speaker_id)
+                target = get_resampler(h.out_sample_rate, h.in_sample_rate)(target[None]).squeeze(0)
+                yield target[: h.vq_init_wav_length].to(device)[None, None]
 
-    net_g.initialize_vq([wav_iterator(speaker_id) for speaker_id in range(len(teachers))])
+        net_g.initialize_vq([wav_iterator(speaker_id) for speaker_id in range(len(teachers))])
     optim_g = torch.optim.AdamW(net_g.parameters(), h.learning_rate_g, betas=h.adam_betas, eps=h.adam_eps)
     optim_d = torch.optim.AdamW(net_d.parameters(), h.learning_rate_d, betas=h.adam_betas, eps=h.adam_eps)
     scaler = torch.amp.GradScaler("cuda", enabled=h.use_amp)
