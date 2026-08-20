@@ -1,7 +1,7 @@
 [project]
 name = "beatrice-model-merger"
 version = "2.0.0rc0"
-description = "A tool to merge Beatrice models"
+description = "A tool to distill Beatrice models"
 authors = [
     { name = "Project Beatrice", email = "167534685+prj-beatrice@users.noreply.github.com" },
 ]
@@ -16,6 +16,7 @@ dependencies = [
     "tensorboard>=2",
     "soundfile>=0.11",
     "pyworld>=0.3.2",
+    "pybind11>=2.10",
 ]
 
 [project.optional-dependencies]
