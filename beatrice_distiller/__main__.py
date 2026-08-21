@@ -374,7 +374,11 @@ def write_merged_toml(output_dir: Path, teachers: list[tuple[Path, int, dict]]) 
                 for index, match in enumerate(matches)
             }
     with open(output_dir / "beatrice_paraphernalia_distilled.toml", "w", encoding="utf-8") as file:
-        file.write(f'[model]\nversion = "{PARAPHERNALIA_VERSION}"\nname = "distilled"\n')
+        file.write(
+            f'[model]\nversion = "{PARAPHERNALIA_VERSION}"\n'
+            'name = "distilled"\n'
+            'description = ""\n'
+        )
         for speaker_id, (model_dir, teacher_speaker_id, teacher) in enumerate(teachers):
             section = voice_sections[teacher["toml_file"]].get(teacher_speaker_id)
             if section is None:
