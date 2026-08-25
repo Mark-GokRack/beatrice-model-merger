@@ -40,6 +40,7 @@ from beatrice_trainer.__main__ import (
     PhoneExtractor,
     PARAPHERNALIA_VERSION,
     PitchEstimator,
+    augment_audio,
     get_compressed_optimizer_state_dict,
     get_resampler,
     repo_root,
@@ -70,6 +71,15 @@ DEFAULT_CONFIG = {
     "segment_length": 100,
     "phone_noise_ratio": 0.5,
     "formant_shift_candidates": [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+    "augmentation_snr_candidates": [20.0, 25.0, 30.0, 35.0, 40.0, 45.0],
+    "augmentation_formant_shift_probability": 0.5,
+    "augmentation_formant_shift_semitone_min": -3.0,
+    "augmentation_formant_shift_semitone_max": 3.0,
+    "augmentation_reverb_probability": 0.5,
+    "augmentation_lpf_probability": 0.2,
+    "augmentation_lpf_cutoff_freq_candidates": [2000.0, 3000.0, 4000.0, 6000.0],
+    "in_ir_wav_dir": "beatrice-trainer/assets/ir",
+    "in_noise_wav_dir": "beatrice-trainer/assets/noise",
     "vq_topk": 4,
     "vq_init_from_bin": True,
     "vq_init_max_files": 128,
@@ -118,6 +128,15 @@ class DistillationDataset(Dataset):
         segment_length: int,
         formant_shift_candidates: list[float],
         vq_topk: int,
+        noise_files: list[Path],
+        ir_files: list[Path],
+        augmentation_snr_candidates: list[float],
+        augmentation_formant_shift_probability: float,
+        augmentation_formant_shift_semitone_min: float,
+        augmentation_formant_shift_semitone_max: float,
+        augmentation_reverb_probability: float,
+        augmentation_lpf_probability: float,
+        augmentation_lpf_cutoff_freq_candidates: list[float],
     ) -> None:
         self.examples = examples
         self.in_sample_rate = in_sample_rate
@@ -128,6 +147,15 @@ class DistillationDataset(Dataset):
         self.out_hop_length = out_sample_rate // 100
         self.formant_shift_candidates = tuple(formant_shift_candidates)
         self.vq_topk = vq_topk
+        self.noise_files = noise_files
+        self.ir_files = ir_files
+        self.augmentation_snr_candidates = augmentation_snr_candidates
+        self.augmentation_formant_shift_probability = augmentation_formant_shift_probability
+        self.augmentation_formant_shift_semitone_min = augmentation_formant_shift_semitone_min
+        self.augmentation_formant_shift_semitone_max = augmentation_formant_shift_semitone_max
+        self.augmentation_reverb_probability = augmentation_reverb_probability
+        self.augmentation_lpf_probability = augmentation_lpf_probability
+        self.augmentation_lpf_cutoff_freq_candidates = augmentation_lpf_cutoff_freq_candidates
         self._converters = {}
         if not self.formant_shift_candidates:
             raise ValueError("formant_shift_candidates must not be empty")
@@ -174,12 +202,27 @@ class DistillationDataset(Dataset):
         source_file, model_dir, teacher_speaker_id, speaker_id = self.examples[index]
         source, source_rate = self._load_mono(source_file)
         source = get_resampler(source_rate, self.in_sample_rate)(source).squeeze(0)
+        if source.abs().max() == 0:
+            raise ValueError(f"Silent source audio: {source_file}")
         formant_shift = self.formant_shift_candidates[
             torch.randint(len(self.formant_shift_candidates), ()).item()
         ]
         target = self._generate_target(
             source, model_dir, teacher_speaker_id, formant_shift
         )
+        source = augment_audio(
+            source[None],
+            self.in_sample_rate,
+            self.noise_files,
+            self.ir_files,
+            self.augmentation_snr_candidates,
+            self.augmentation_formant_shift_probability,
+            self.augmentation_formant_shift_semitone_min,
+            self.augmentation_formant_shift_semitone_max,
+            self.augmentation_reverb_probability,
+            self.augmentation_lpf_probability,
+            self.augmentation_lpf_cutoff_freq_candidates,
+        ).squeeze(0)
 
         common_frames = min(
             source.numel() // self.in_hop_length,
@@ -258,6 +301,17 @@ def find_source_files(data_dir: Path) -> list[Path]:
     )
     if not files:
         raise ValueError(f"No WAV files found under {data_dir}")
+    return files
+
+
+def find_augmentation_files(directory: Path, label: str) -> list[Path]:
+    files = sorted(
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in AUDIO_FILE_SUFFIXES
+    )
+    if not files:
+        raise ValueError(f"No audio files found for {label}: {directory}")
     return files
 
 
@@ -443,6 +497,12 @@ def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     source_files = find_source_files(args.data_dir)
     teachers = find_teachers(args.weights_dir)
+    noise_files = find_augmentation_files(
+        repo_root() / h.in_noise_wav_dir, "input noise augmentation"
+    )
+    ir_files = find_augmentation_files(
+        repo_root() / h.in_ir_wav_dir, "input reverb augmentation"
+    )
     examples = make_examples(source_files, teachers)
     if not h.vq_init_from_bin:
         if h.vq_init_max_files < 1:
@@ -463,6 +523,15 @@ def main() -> None:
         h.segment_length,
         h.formant_shift_candidates,
         h.vq_topk,
+        noise_files,
+        ir_files,
+        h.augmentation_snr_candidates,
+        h.augmentation_formant_shift_probability,
+        h.augmentation_formant_shift_semitone_min,
+        h.augmentation_formant_shift_semitone_max,
+        h.augmentation_reverb_probability,
+        h.augmentation_lpf_probability,
+        h.augmentation_lpf_cutoff_freq_candidates,
     )
     loader_workers = 0 if os.name == "nt" else min(h.num_workers, os.cpu_count() or 1)
     if os.name == "nt" and h.num_workers != 0:
