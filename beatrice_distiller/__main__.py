@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "wav_length": 96000,
     "segment_length": 100,
     "phone_noise_ratio": 0.5,
+    "formant_shift_candidates": [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
     "vq_topk": 4,
     "vq_init_from_bin": True,
     "vq_init_max_files": 128,
@@ -115,6 +116,7 @@ class DistillationDataset(Dataset):
         out_sample_rate: int,
         wav_length: int,
         segment_length: int,
+        formant_shift_candidates: list[float],
     ) -> None:
         self.examples = examples
         self.in_sample_rate = in_sample_rate
@@ -123,7 +125,16 @@ class DistillationDataset(Dataset):
         self.segment_length = segment_length
         self.in_hop_length = in_sample_rate // 100
         self.out_hop_length = out_sample_rate // 100
+        self.formant_shift_candidates = tuple(formant_shift_candidates)
         self._converters = {}
+        if not self.formant_shift_candidates:
+            raise ValueError("formant_shift_candidates must not be empty")
+        for semitones in self.formant_shift_candidates:
+            index = (semitones + 2.0) * 2.0
+            if not -2.0 <= semitones <= 2.0 or not math.isclose(index, round(index)):
+                raise ValueError(
+                    "formant_shift_candidates must use 0.5-semitone values from -2.0 to 2.0"
+                )
 
     @staticmethod
     def _load_mono(file: Path) -> tuple[torch.Tensor, int]:
@@ -132,7 +143,13 @@ class DistillationDataset(Dataset):
             wav = wav.mean(0, keepdim=True)
         return wav, sample_rate
 
-    def _generate_target(self, source: torch.Tensor, model_dir: Path, teacher_speaker_id: int) -> torch.Tensor:
+    def _generate_target(
+        self,
+        source: torch.Tensor,
+        model_dir: Path,
+        teacher_speaker_id: int,
+        formant_shift: float = 0.0,
+    ) -> torch.Tensor:
         converter_key = (model_dir, teacher_speaker_id)
         converter = self._converters.get(converter_key)
         if converter is None:
@@ -141,19 +158,24 @@ class DistillationDataset(Dataset):
             converter = Converter()
             converter.load_model(model_dir)
             converter.set_target_speaker(teacher_speaker_id)
-            converter.set_formant_shift(0.0)
-            converter.set_pitch_shift(0.0)
             converter.set_vq_num_neighbors(0)
             self._converters[converter_key] = converter
         converter.reset()
+        converter.set_formant_shift(formant_shift)
+        converter.set_pitch_shift(0.0)
         target = converter.process(source.numpy().astype("float32", copy=False))
         return torch.from_numpy(target)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, int]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, int, float]:
         source_file, model_dir, teacher_speaker_id, speaker_id = self.examples[index]
         source, source_rate = self._load_mono(source_file)
         source = get_resampler(source_rate, self.in_sample_rate)(source).squeeze(0)
-        target = self._generate_target(source, model_dir, teacher_speaker_id)
+        formant_shift = self.formant_shift_candidates[
+            torch.randint(len(self.formant_shift_candidates), ()).item()
+        ]
+        target = self._generate_target(
+            source, model_dir, teacher_speaker_id, formant_shift
+        )
 
         common_frames = min(
             source.numel() // self.in_hop_length,
@@ -167,17 +189,19 @@ class DistillationDataset(Dataset):
         # Keep the input/output amplitude relationship produced by the teacher.
         peak = torch.maximum(source.abs().max(), target.abs().max()).clamp_min(1e-5)
         scale = (torch.rand(()) * 0.899 + 0.1) / peak
-        return source * scale, target * scale, speaker_id
+        return source * scale, target * scale, speaker_id, formant_shift
 
     def __len__(self) -> int:
         return len(self.examples)
 
     def collate(
-        self, batch: list[tuple[torch.Tensor, torch.Tensor, int]]
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        source_wavs, target_wavs, speaker_ids, slice_starts = [], [], [], []
+        self, batch: list[tuple[torch.Tensor, torch.Tensor, int, float]]
+    ) -> tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
+        source_wavs, target_wavs, speaker_ids, formant_shifts, slice_starts = [], [], [], [], []
         total_frames = self.wav_length // self.out_hop_length
-        for source, target, speaker_id in batch:
+        for source, target, speaker_id, formant_shift in batch:
             frames = min(
                 source.numel() // self.in_hop_length,
                 target.numel() // self.out_hop_length,
@@ -196,12 +220,14 @@ class DistillationDataset(Dataset):
             # The loss is calculated on a random 1-second region of this window.
             slice_starts.append(torch.randint(0, total_frames - self.segment_length + 1, ()).item())
             speaker_ids.append(speaker_id)
+            formant_shifts.append(formant_shift)
 
         return (
             torch.stack(source_wavs),
             torch.stack(target_wavs),
             torch.tensor(slice_starts),
             torch.tensor(speaker_ids),
+            torch.tensor(formant_shifts),
         )
 
 
@@ -425,7 +451,14 @@ def main() -> None:
     for speaker_id, (model_dir, teacher_speaker_id, teacher) in enumerate(teachers):
         print(f"  {speaker_id}: {teacher['voice'].get('name', f'{model_dir.name}:{teacher_speaker_id}')} ({model_dir})")
 
-    dataset = DistillationDataset(examples, h.in_sample_rate, h.out_sample_rate, h.wav_length, h.segment_length)
+    dataset = DistillationDataset(
+        examples,
+        h.in_sample_rate,
+        h.out_sample_rate,
+        h.wav_length,
+        h.segment_length,
+        h.formant_shift_candidates,
+    )
     loader_workers = 0 if os.name == "nt" else min(h.num_workers, os.cpu_count() or 1)
     if os.name == "nt" and h.num_workers != 0:
         print("Windows uses num_workers=0 because teacher inference datasets cannot be spawned safely.")
@@ -497,12 +530,20 @@ def main() -> None:
     data_iterator = iter(loader)
     for iteration in tqdm(range(h.n_steps), desc="Distilling"):
         try:
-            source_wavs, target_wavs, slice_starts, speaker_ids = next(data_iterator)
+            source_wavs, target_wavs, slice_starts, speaker_ids, formant_shifts = next(data_iterator)
         except StopIteration:
             data_iterator = iter(loader)
-            source_wavs, target_wavs, slice_starts, speaker_ids = next(data_iterator)
-        source_wavs, target_wavs, slice_starts, speaker_ids = (value.to(device, non_blocking=True) for value in (source_wavs, target_wavs, slice_starts, speaker_ids))
-        formant_shifts = torch.zeros_like(speaker_ids, dtype=torch.float)
+            source_wavs, target_wavs, slice_starts, speaker_ids, formant_shifts = next(data_iterator)
+        source_wavs, target_wavs, slice_starts, speaker_ids, formant_shifts = (
+            value.to(device, non_blocking=True)
+            for value in (
+                source_wavs,
+                target_wavs,
+                slice_starts,
+                speaker_ids,
+                formant_shifts,
+            )
+        )
         with torch.amp.autocast("cuda", enabled=h.use_amp):
             y, y_hat, y_hat_for_backward, loss_loudness, loss_mel, loss_ap, _ = net_g.forward_and_compute_loss(
                 source_wavs[:, None], speaker_ids, formant_shifts, slice_starts, h.segment_length, target_wavs[:, None], h.grad_weight_ap != 0.0

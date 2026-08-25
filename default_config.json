@@ -24,6 +24,7 @@
   "wav_length": 96000,
   "segment_length": 100,
   "phone_noise_ratio": 0.5,
+  "formant_shift_candidates": [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
   "vq_topk": 4,
   "vq_init_from_bin": true,
   "vq_init_max_files": 128,

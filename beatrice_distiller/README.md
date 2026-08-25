@@ -23,7 +23,7 @@ weights/
     ...
 ```
 
-Each source waveform is converted by every teacher voice with zero pitch/formant shift and zero VQ neighbours. The conversion is reset per waveform, then its generated output is used as the training target.
+Each source waveform is converted by every teacher voice with a randomly selected formant shift and zero VQ neighbours. The selected value is passed to both the teacher and the student's formant embedding, so the generated output remains an aligned training target. The conversion is reset per waveform.
 
 ## Run
 
@@ -43,7 +43,8 @@ At each `save_interval`, the distiller writes a training checkpoint and a `parap
 - Training feeds each source waveform to the student and uses the teacher's generated waveform as its target, so it learns the actual conversion task rather than self-reconstruction from pseudo voices.
 - VQ codebooks are loaded from each teacher voice's `speaker_embeddings.bin` by default, so codebook K-means initialization is skipped.
 - Teacher TOML model versions must match the distiller's Beatrice version (`2.0.0-rc.0`). Set `vq_init_from_bin` to `false` in a config file to use the legacy dynamically generated-output initialization instead.
-- Formant-shift augmentation is disabled because it would invalidate source/target alignment.
+- `formant_shift_candidates` selects the discrete formant conditions used for training. Its default values are the nine formant-embedding positions from $-2.0$ to $+2.0$ semitones in $0.5$-semitone steps. Set it to `[0.0]` to disable formant variation.
+- The imported `ConverterNetwork` performs the trainer's pitch-shift augmentation automatically while it is in training mode. The teacher target remains at zero explicit pitch shift, matching the regular trainer's pitch-robustness training.
 - Confirm that you have permission to generate derivatives of every teacher model and every source recording used in the dataset.
 
 ## Dynamic Teacher Inference
