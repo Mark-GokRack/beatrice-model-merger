@@ -117,6 +117,7 @@ class DistillationDataset(Dataset):
         wav_length: int,
         segment_length: int,
         formant_shift_candidates: list[float],
+        vq_topk: int,
     ) -> None:
         self.examples = examples
         self.in_sample_rate = in_sample_rate
@@ -126,9 +127,12 @@ class DistillationDataset(Dataset):
         self.in_hop_length = in_sample_rate // 100
         self.out_hop_length = out_sample_rate // 100
         self.formant_shift_candidates = tuple(formant_shift_candidates)
+        self.vq_topk = vq_topk
         self._converters = {}
         if not self.formant_shift_candidates:
             raise ValueError("formant_shift_candidates must not be empty")
+        if not 1 <= self.vq_topk <= 8:
+            raise ValueError("vq_topk must be between 1 and 8 for teacher inference")
         for semitones in self.formant_shift_candidates:
             index = (semitones + 2.0) * 2.0
             if not -2.0 <= semitones <= 2.0 or not math.isclose(index, round(index)):
@@ -158,7 +162,7 @@ class DistillationDataset(Dataset):
             converter = Converter()
             converter.load_model(model_dir)
             converter.set_target_speaker(teacher_speaker_id)
-            converter.set_vq_num_neighbors(0)
+            converter.set_vq_num_neighbors(self.vq_topk)
             self._converters[converter_key] = converter
         converter.reset()
         converter.set_formant_shift(formant_shift)
@@ -458,6 +462,7 @@ def main() -> None:
         h.wav_length,
         h.segment_length,
         h.formant_shift_candidates,
+        h.vq_topk,
     )
     loader_workers = 0 if os.name == "nt" else min(h.num_workers, os.cpu_count() or 1)
     if os.name == "nt" and h.num_workers != 0:
