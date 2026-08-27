@@ -9,6 +9,7 @@ Teacher outputs are generated on demand from the teacher `.bin` files, so no pre
 教師の出力は教師 `.bin` ファイルから必要に応じて生成されるため、事前にレンダリングしたターゲット音声は不要です。
 
 This project is experimental, and does not guarantee the quality of the generated student models.
+
 このプロジェクトは実験的なものであり、生成される生徒モデルの品質を保証するものではありません。
 
 ## Dataset layout / データの配置方法
