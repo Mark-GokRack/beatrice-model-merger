@@ -1,14 +1,25 @@
 # Beatrice Model Merger
 
-`beatrice_distiller` trains one multi-speaker student model from source audio and one or more Beatrice teacher models. Teacher outputs are generated on demand from the teacher `.bin` files, so no pre-rendered target audio is required.
+## Abstract / 概要
 
-`beatrice_distiller` は、ソース音声と 1 つ以上の Beatrice 教師モデルから、複数話者に対応する 1 つの生徒モデルを学習します。教師の出力は教師 `.bin` ファイルから必要に応じて生成されるため、事前にレンダリングしたターゲット音声は不要です。
+This project trains one multi-speaker student model from source audio and one or more Beatrice teacher models.  
+Teacher outputs are generated on demand from the teacher `.bin` files, so no pre-rendered target audio is required.
 
-## Dataset layout
+このプロジェクトは、ソース音声と 1 つ以上の Beatrice 教師モデルから、複数話者に対応する 1 つの生徒モデルを学習します。  
+教師の出力は教師 `.bin` ファイルから必要に応じて生成されるため、事前にレンダリングしたターゲット音声は不要です。
 
-Pass a source-data directory with `-d`; every `.wav` file below it is found recursively and used. Pass a teacher-model directory with `-w`; every subdirectory containing the five Beatrice inference `.bin` files and one TOML file is found recursively. Each voice in each discovered teacher model becomes one voice in the distilled model, in path order followed by original voice-number order.
+This project is experimental, and does not guarantee the quality of the generated student models.
+このプロジェクトは実験的なものであり、生成される生徒モデルの品質を保証するものではありません。
 
-ソースデータのディレクトリは `-d` で指定します。配下にあるすべての `.wav` ファイルが再帰的に検出され、使用されます。教師モデルのディレクトリは `-w` で指定します。Beatrice 推論用の 5 つの `.bin` ファイルと 1 つの TOML ファイルを含むすべてのサブディレクトリが再帰的に検出されます。検出された各教師モデルの各ボイスは、パス順、次いで元のボイス番号順で、蒸留モデル内の 1 ボイスになります。
+## Dataset layout / データの配置方法
+
+Pass a directory of sound source data for training with `-d`; every `.wav` file below it is found recursively and used. Pass a teacher-model directory with `-w`; every subdirectory containing the five Beatrice inference `.bin` files and one TOML file is found recursively. Each voice in each discovered teacher model becomes one voice in the distilled model, in path order followed by original voice-number order.
+
+学習に使用する音源データのディレクトリは `-d` で指定します。配下にあるすべての `.wav` ファイルが再帰的に検出され、使用されます。教師モデルのディレクトリは `-w` で指定します。Beatrice 推論用の 5 つの `.bin` ファイルと 1 つの TOML ファイルを含むすべてのサブディレクトリが再帰的に検出されます。検出された各教師モデルの各ボイスは、パス順、次いで元のボイス番号順で、蒸留モデル内の 1 ボイスになります。
+
+During development of this project, we used [LibriTTS-R](https://www.openslr.org/141/) as the source audio dataset for training and verified that the project runs with it.
+
+このプロジェクトの開発にあたり、学習時の音源ファイルとして [LibriTTS-R](https://www.openslr.org/141/) を使用し、動作確認を行っております。
 
 ```text
 data/
@@ -31,42 +42,7 @@ Each source waveform is converted by every teacher voice with a randomly selecte
 
 各ソース波形は、ランダムに選ばれたフォルマントシフトと VQ 近傍数 4 を使用して、すべての教師ボイスで変換されます。選ばれた値は教師と生徒の両方のフォルマント埋め込みに渡されるため、生成された出力は整合した学習ターゲットとして維持されます。変換は波形ごとにリセットされます。
 
-## Run
-
-From the repository root, activate the environment and start training:
-
-リポジトリのルートから環境を有効化し、学習を開始します。
-
-```powershell
-python -m beatrice_distiller -d data -w weights -o distilled_output
-```
-
-Use `-c config.json` to override keys in the distiller's `DEFAULT_CONFIG`. The pretrained generator checkpoint and the two frozen feature extractors must remain available at the configured paths.
-
-`-c config.json` を使用すると、distiller の `DEFAULT_CONFIG` に含まれるキーを上書きできます。事前学習済みジェネレーターのチェックポイントと 2 つの固定済み特徴抽出器は、設定されたパスで利用可能な状態にしておく必要があります。
-
-At each `save_interval`, the distiller writes a training checkpoint and a `paraphernalia_distilled_<step>` directory. The latter contains the inference `.bin` files and a TOML file. The output TOML combines the original teacher voice sections in the same discovery order as the distilled speaker embeddings, including voice descriptions, average pitches, and portraits where their files are available.
-
-各 `save_interval` で、distiller は学習チェックポイントと `paraphernalia_distilled_<step>` ディレクトリを書き出します。後者には推論用の `.bin` ファイルと TOML ファイルが含まれます。出力 TOML には、蒸留された話者埋め込みと同じ検出順で元の教師ボイスのセクションが統合され、利用可能な場合はボイスの説明、平均ピッチ、ポートレートも含まれます。
-
-## Notes
-
-- Training feeds each source waveform to the student and uses the teacher's generated waveform as its target, so it learns the actual conversion task rather than self-reconstruction from pseudo voices.
-- 学習では各ソース波形を生徒に入力し、教師が生成した波形をターゲットとして使用します。そのため、疑似ボイスからの自己再構成ではなく、実際の変換タスクを学習します。
-- VQ codebooks are loaded from each teacher voice's `speaker_embeddings.bin` by default, so codebook K-means initialization is skipped.
-- 既定では VQ コードブックが各教師ボイスの `speaker_embeddings.bin` から読み込まれるため、コードブックの K-means 初期化はスキップされます。
-- Teacher TOML model versions must match the distiller's Beatrice version (`2.0.0-rc.0`). Set `vq_init_from_bin` to `false` in a config file to use the legacy dynamically generated-output initialization instead.
-- 教師 TOML のモデルバージョンは、distiller の Beatrice バージョン（`2.0.0-rc.0`）と一致している必要があります。従来の動的生成出力による初期化を使用する場合は、設定ファイルで `vq_init_from_bin` を `false` に設定してください。
-- `formant_shift_candidates` selects the discrete formant conditions used for training. Its default values are the nine formant-embedding positions from $-2.0$ to $+2.0$ semitones in $0.5$-semitone steps. Set it to `[0.0]` to disable formant variation.
-- `formant_shift_candidates` は、学習に使用する離散的なフォルマント条件を選択します。既定値は、$-2.0$ から $+2.0$ 半音までを $0.5$ 半音刻みで表す 9 つのフォルマント埋め込み位置です。フォルマント変動を無効化するには `[0.0]` に設定してください。
-- The imported `ConverterNetwork` performs the trainer's pitch-shift augmentation automatically while it is in training mode. The teacher target remains at zero explicit pitch shift, matching the regular trainer's pitch-robustness training.
-- インポートされた `ConverterNetwork` は、学習モード中にトレーナーのピッチシフト拡張を自動で実行します。教師ターゲットは明示的なピッチシフト 0 のままで、通常のトレーナーにおけるピッチロバスト性学習と一致します。
-- Confirm that you have permission to generate derivatives of every teacher model and every source recording used in the dataset.
-- 各教師モデルとデータセットで使用する各ソース録音について、派生物を生成する許可があることを確認してください。
-
-## Dynamic Teacher Inference
-
-## 動的な教師推論
+## Dynamic Teacher Inference / 動的な教師推論
 
 `native/beatrice_inference.cc` is a pybind11 binding to the official
 `beatrice.lib` C API supplied by the `beatrice-vst` submodule. It supports
@@ -161,3 +137,36 @@ trims the source/target pair to their shared frame count before training.
 出力には推論エンジンの起動時および末尾の遅延が含まれます。distiller はソース波形ごとに
 `process()` を一度呼び出し、このパディングを維持したまま、学習前にソース/ターゲットのペアを
 共通のフレーム数までトリミングします。
+
+## Run / 実行
+
+From the repository root, activate the environment and start training:
+
+リポジトリのルートから環境を有効化し、学習を開始します。
+
+```powershell
+python -m beatrice_distiller -d data -w weights -o distilled_output
+```
+
+Use `-c config.json` to override keys in the distiller's `DEFAULT_CONFIG`. The pretrained generator checkpoint and the two frozen feature extractors must remain available at the configured paths.
+
+`-c config.json` を使用すると、distiller の `DEFAULT_CONFIG` に含まれるキーを上書きできます。事前学習済みジェネレーターのチェックポイントと 2 つの固定済み特徴抽出器は、設定されたパスで利用可能な状態にしておく必要があります。
+
+At each `save_interval`, the distiller writes a training checkpoint and a `paraphernalia_distilled_<step>` directory. The latter contains the inference `.bin` files and a TOML file. The output TOML combines the original teacher voice sections in the same discovery order as the distilled speaker embeddings, including voice descriptions, average pitches, and portraits where their files are available.
+
+各 `save_interval` で、distiller は学習チェックポイントと `paraphernalia_distilled_<step>` ディレクトリを書き出します。後者には推論用の `.bin` ファイルと TOML ファイルが含まれます。出力 TOML には、蒸留された話者埋め込みと同じ検出順で元の教師ボイスのセクションが統合され、利用可能な場合はボイスの説明、平均ピッチ、ポートレートも含まれます。
+
+## Notes / 注釈
+
+- Training feeds each source waveform to the student and uses the teacher's generated waveform as its target, so it learns the actual conversion task rather than self-reconstruction from pseudo voices.
+- 学習では各ソース波形を生徒に入力し、教師が生成した波形をターゲットとして使用します。そのため、疑似ボイスからの自己再構成ではなく、実際の変換タスクを学習します。
+- VQ codebooks are loaded from each teacher voice's `speaker_embeddings.bin` by default, so codebook K-means initialization is skipped.
+- 既定では VQ コードブックが各教師ボイスの `speaker_embeddings.bin` から読み込まれるため、コードブックの K-means 初期化はスキップされます。
+- Teacher TOML model versions must match the distiller's Beatrice version (`2.0.0-rc.0`). Set `vq_init_from_bin` to `false` in a config file to use the legacy dynamically generated-output initialization instead.
+- 教師 TOML のモデルバージョンは、distiller の Beatrice バージョン（`2.0.0-rc.0`）と一致している必要があります。従来の動的生成出力による初期化を使用する場合は、設定ファイルで `vq_init_from_bin` を `false` に設定してください。
+- `formant_shift_candidates` selects the discrete formant conditions used for training. Its default values are the nine formant-embedding positions from $-2.0$ to $+2.0$ semitones in $0.5$-semitone steps. Set it to `[0.0]` to disable formant variation.
+- `formant_shift_candidates` は、学習に使用する離散的なフォルマント条件を選択します。既定値は、$-2.0$ から $+2.0$ 半音までを $0.5$ 半音刻みで表す 9 つのフォルマント埋め込み位置です。フォルマント変動を無効化するには `[0.0]` に設定してください。
+- The imported `ConverterNetwork` performs the trainer's pitch-shift augmentation automatically while it is in training mode. The teacher target remains at zero explicit pitch shift, matching the regular trainer's pitch-robustness training.
+- インポートされた `ConverterNetwork` は、学習モード中にトレーナーのピッチシフト拡張を自動で実行します。教師ターゲットは明示的なピッチシフト 0 のままで、通常のトレーナーにおけるピッチロバスト性学習と一致します。
+- Confirm that you have permission to generate derivatives of every teacher model and every source recording used in the dataset.
+- 各教師モデルとデータセットで使用する各ソース録音について、派生物を生成する許可があることを確認してください。
