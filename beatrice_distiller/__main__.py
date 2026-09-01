@@ -330,10 +330,12 @@ def find_teachers(weights_dir: Path) -> list[tuple[Path, int, dict]]:
         model_metadata = metadata.get("model", {})
         model_version = model_metadata.get("version") if isinstance(model_metadata, dict) else None
         if model_version != PARAPHERNALIA_VERSION:
-            raise ValueError(
-                f"Teacher model version must be {PARAPHERNALIA_VERSION}, "
-                f"but {model_dir} declares {model_version!r}"
+            print(
+                f"Warning: Teacher model version must be {PARAPHERNALIA_VERSION}, "
+                f"but {model_dir} declares {model_version!r}",
+                file=sys.stderr,
             )
+            raise SystemExit(1)
         voices = metadata.get("voice", {})
         for voice_id in sorted((int(key) for key in voices)):
             teachers.append((model_dir, voice_id, {"toml_file": toml_files[0], "voice": voices[str(voice_id)]}))
@@ -540,6 +542,51 @@ def _load_waveform_generator(reader: _BinaryTensorReader, net_g: ConverterNetwor
     vocoder.post_filter_scale.fill_(1.0)
 
 
+def _load_teacher_speaker_embeddings(
+    net_g: ConverterNetwork,
+    teachers: list[tuple[Path, int, dict]],
+    model_dir: Path,
+) -> None:
+    """Load non-codebook speaker tables for each selected voice in one teacher model."""
+    embedding_file = model_dir / "speaker_embeddings.bin"
+    values = np.fromfile(embedding_file, dtype=np.float16)
+    codebook_elements = math.prod(net_g.vq.codebooks.shape[1:])
+    speaker_elements = net_g.embed_speaker.embedding_dim
+    key_value_elements = net_g.key_value_speaker_embedding.embedding_dim
+    formant_elements = math.prod(net_g.embed_formant_shift.weight.shape)
+    per_speaker_elements = codebook_elements + speaker_elements + key_value_elements
+    if values.size < formant_elements or (values.size - formant_elements) % per_speaker_elements:
+        raise ValueError(f"Invalid speaker_embeddings.bin: {embedding_file}")
+    n_speakers = (values.size - formant_elements) // per_speaker_elements
+    speaker_offset = n_speakers * codebook_elements
+    formant_offset = speaker_offset + n_speakers * speaker_elements
+    key_value_offset = formant_offset + formant_elements
+
+    _copy_parameter(
+        net_g.embed_formant_shift.weight,
+        torch.from_numpy(values[formant_offset:key_value_offset].reshape(
+            net_g.embed_formant_shift.weight.shape
+        ).copy()),
+    )
+    for student_speaker_id, (teacher_dir, teacher_speaker_id, _) in enumerate(teachers):
+        if teacher_dir.resolve() != model_dir.resolve():
+            continue
+        if teacher_speaker_id >= n_speakers:
+            raise ValueError(
+                f"Teacher speaker {teacher_speaker_id} is not present in {embedding_file}"
+            )
+        speaker_start = speaker_offset + teacher_speaker_id * speaker_elements
+        key_value_start = key_value_offset + teacher_speaker_id * key_value_elements
+        _copy_parameter(
+            net_g.embed_speaker.weight[student_speaker_id],
+            torch.from_numpy(values[speaker_start:speaker_start + speaker_elements].copy()),
+        )
+        _copy_parameter(
+            net_g.key_value_speaker_embedding.weight[student_speaker_id],
+            torch.from_numpy(values[key_value_start:key_value_start + key_value_elements].copy()),
+        )
+
+
 def initialize_generator_from_teachers(
     net_g: ConverterNetwork,
     teachers: list[tuple[Path, int, dict]],
@@ -570,6 +617,8 @@ def initialize_generator_from_teachers(
     with torch.no_grad():
         _load_waveform_generator(waveform_reader, net_g)
         _load_embedding_setter(embedding_reader, net_g.vocoder.prenet)
+        if mode == "teacher":
+            _load_teacher_speaker_embeddings(net_g, teachers, model_dirs[0])
     waveform_reader.finish()
     embedding_reader.finish()
     print(f"Initialized waveform generator from {mode}: {', '.join(map(str, model_dirs))}")
