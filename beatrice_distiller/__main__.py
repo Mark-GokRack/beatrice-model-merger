@@ -84,6 +84,8 @@ DEFAULT_CONFIG = {
     "vq_init_from_bin": True,
     "vq_init_max_files": 128,
     "vq_init_wav_length": 16000,
+    "generator_init_mode": "pretrained",
+    "generator_init_model": None,
     "training_time_vq": "none",
     "floor_noise_level": 1e-3,
     "pitch_bins": 448,
@@ -403,6 +405,176 @@ def prepare_pretrained_generator(checkpoint: dict, n_speakers: int) -> dict:
     return state
 
 
+class _BinaryTensorReader:
+    """Read one or more same-layout FP16 inference binaries as FP32 tensors."""
+
+    def __init__(self, files: list[Path]) -> None:
+        arrays = [np.fromfile(file, dtype=np.float16) for file in files]
+        if not arrays or any(array.size != arrays[0].size for array in arrays[1:]):
+            raise ValueError(f"Inference binaries do not have a matching layout: {files}")
+        self.values = np.mean(np.stack(arrays, dtype=np.float32), axis=0)
+        self.files = files
+        self.offset = 0
+
+    def read(self, shape: torch.Size) -> torch.Tensor:
+        count = math.prod(shape)
+        end = self.offset + count
+        if end > self.values.size:
+            raise ValueError(f"Unexpected end of inference binary: {self.files}")
+        value = torch.from_numpy(self.values[self.offset:end].reshape(tuple(shape)).copy())
+        self.offset = end
+        return value
+
+    def finish(self) -> None:
+        if self.offset != self.values.size:
+            raise ValueError(
+                f"Unexpected trailing values in inference binary: {self.files} "
+                f"({self.values.size - self.offset} FP16 values)"
+            )
+
+
+def _copy_parameter(parameter: torch.Tensor, value: torch.Tensor) -> None:
+    parameter.data.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
+
+
+def _load_standard_layer(reader: _BinaryTensorReader, layer: torch.nn.Module) -> None:
+    _copy_parameter(layer.weight, reader.read(layer.weight.shape))
+    if layer.bias is not None:
+        _copy_parameter(layer.bias, reader.read(layer.bias.shape))
+    if hasattr(layer, "gain"):
+        weight = layer.weight.data
+        dims = tuple(range(1, weight.ndim))
+        variance, mean = torch.var_mean(weight, dims, keepdim=True)
+        gain = (variance * math.prod(weight.shape[1:]) + 1e-8).sqrt()
+        layer.weight.data.copy_(weight - mean)
+        _copy_parameter(layer.gain, gain)
+
+
+def _load_cross_attention(reader: _BinaryTensorReader, attention: torch.nn.Module) -> None:
+    scale = math.sqrt(math.sqrt(attention.head_qk_channels))
+    _copy_parameter(
+        attention.q_projection.weight,
+        reader.read(attention.q_projection.weight.shape) * scale,
+    )
+    _copy_parameter(
+        attention.q_projection.bias,
+        reader.read(attention.q_projection.bias.shape) * scale,
+    )
+    _load_standard_layer(reader, attention.out_projection)
+
+
+def _load_embedding_setter(reader: _BinaryTensorReader, prenet: torch.nn.Module) -> None:
+    for block in prenet.convnext:
+        attention = block.mha
+        scale = math.sqrt(math.sqrt(attention.head_qk_channels))
+        key_weights = []
+        value_weights = []
+        for _ in range(attention.num_heads):
+            key_weights.append(
+                reader.read(torch.Size((attention.head_qk_channels, attention.in_kv_channels)))
+                * scale
+            )
+            value_weights.append(
+                reader.read(torch.Size((attention.head_vo_channels, attention.in_kv_channels)))
+            )
+        key_biases = []
+        value_biases = []
+        for _ in range(attention.num_heads):
+            key_biases.append(reader.read(torch.Size((attention.head_qk_channels,))) * scale)
+            value_biases.append(reader.read(torch.Size((attention.head_vo_channels,))))
+        _copy_parameter(
+            attention.kv_projection.weight,
+            torch.cat((torch.cat(key_weights), torch.cat(value_weights))),
+        )
+        _copy_parameter(
+            attention.kv_projection.bias,
+            torch.cat((torch.cat(key_biases), torch.cat(value_biases))),
+        )
+
+
+def _load_convnext_stack(reader: _BinaryTensorReader, stack: torch.nn.Module) -> None:
+    _load_standard_layer(reader, stack.embed)
+    if not stack.use_weight_standardization:
+        _load_standard_layer(reader, stack.norm)
+    for block in stack.convnext:
+        if block.use_mha:
+            if not block.cross_attention:
+                raise ValueError("Self-attention is not supported by the inference-binary loader")
+            _load_cross_attention(reader, block.mha)
+            block.attn_norm.weight.data.fill_(1.0)
+            block.attn_norm.bias.data.zero_()
+        _load_standard_layer(reader, block.dwconv)
+        _load_standard_layer(reader, block.pwconv1)
+        _load_standard_layer(reader, block.pwconv2)
+        if hasattr(block, "gamma"):
+            block.gamma.data.fill_(1.0)
+        if hasattr(block, "pre_scale"):
+            block.pre_scale.fill_(1.0)
+            block.post_scale.fill_(1.0)
+            block.post_scale_weight.data.fill_(1.0)
+        if not block.use_weight_standardization:
+            block.norm.weight.data.fill_(1.0)
+            block.norm.bias.data.zero_()
+    if not stack.use_weight_standardization:
+        _load_standard_layer(reader, stack.final_layer_norm)
+
+
+def _load_waveform_generator(reader: _BinaryTensorReader, net_g: ConverterNetwork) -> None:
+    _load_standard_layer(reader, net_g.embed_phone)
+    _copy_parameter(
+        net_g.embed_quantized_pitch.weight,
+        reader.read(net_g.embed_quantized_pitch.weight.shape),
+    )
+    _load_standard_layer(reader, net_g.embed_pitch_features)
+    vocoder = net_g.vocoder
+    _load_convnext_stack(reader, vocoder.prenet)
+    _load_convnext_stack(reader, vocoder.ir_generator)
+    _load_standard_layer(reader, vocoder.ir_generator_post)
+    _copy_parameter(vocoder.ir_window, reader.read(vocoder.ir_window.shape))
+    _load_convnext_stack(reader, vocoder.aperiodicity_generator)
+    _load_standard_layer(reader, vocoder.aperiodicity_generator_post)
+    _load_convnext_stack(reader, vocoder.post_filter_generator)
+    _load_standard_layer(reader, vocoder.post_filter_generator_post)
+    vocoder.ir_scale.fill_(1.0)
+    vocoder.aperiodicity_scale.fill_(1.0)
+    vocoder.post_filter_scale.fill_(1.0)
+
+
+def initialize_generator_from_teachers(
+    net_g: ConverterNetwork,
+    teachers: list[tuple[Path, int, dict]],
+    weights_dir: Path,
+    mode: str,
+    model: str | None,
+) -> None:
+    model_dirs = list(dict.fromkeys(model_dir for model_dir, _, _ in teachers))
+    if mode == "teacher":
+        if not model:
+            raise ValueError("generator_init_model is required when generator_init_mode is 'teacher'")
+        model_dir = Path(model)
+        if not model_dir.is_absolute():
+            model_dir = weights_dir / model_dir
+        model_dir = model_dir.resolve()
+        if model_dir not in {path.resolve() for path in model_dirs}:
+            raise ValueError(f"generator_init_model is not a discovered teacher model: {model_dir}")
+        model_dirs = [model_dir]
+    elif mode != "average":
+        raise ValueError("generator_init_mode must be 'pretrained', 'teacher', or 'average'")
+
+    waveform_reader = _BinaryTensorReader(
+        [model_dir / "waveform_generator.bin" for model_dir in model_dirs]
+    )
+    embedding_reader = _BinaryTensorReader(
+        [model_dir / "embedding_setter.bin" for model_dir in model_dirs]
+    )
+    with torch.no_grad():
+        _load_waveform_generator(waveform_reader, net_g)
+        _load_embedding_setter(embedding_reader, net_g.vocoder.prenet)
+    waveform_reader.finish()
+    embedding_reader.finish()
+    print(f"Initialized waveform generator from {mode}: {', '.join(map(str, model_dirs))}")
+
+
 def export_paraphernalia(
     output_dir: Path,
     net_g: ConverterNetwork,
@@ -555,6 +727,14 @@ def main() -> None:
     with gzip.open(repo_root() / h.pretrained_file, "rb") as file:
         pretrained = torch.load(file, map_location="cpu", weights_only=True)
     net_g.load_state_dict(prepare_pretrained_generator(pretrained, len(teachers)), strict=False)
+    if h.generator_init_mode != "pretrained":
+        initialize_generator_from_teachers(
+            net_g,
+            teachers,
+            args.weights_dir,
+            h.generator_init_mode,
+            h.generator_init_model,
+        )
     net_d.load_state_dict(pretrained["net_d"], strict=False)
 
     if h.vq_init_from_bin:

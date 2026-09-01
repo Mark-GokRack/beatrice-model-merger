@@ -153,6 +153,23 @@ Use `-c config.json` to override keys in the distiller's `DEFAULT_CONFIG`. The p
 
 `-c config.json` を使用すると、distiller の `DEFAULT_CONFIG` に含まれるキーを上書きできます。事前学習済みジェネレーターのチェックポイントと 2 つの固定済み特徴抽出器は、設定されたパスで利用可能な状態にしておく必要があります。
 
+By default, `generator_init_mode` is `"pretrained"`, which keeps the existing initialization from `pretrained_file`. Set it to `"teacher"` and set `generator_init_model` to a teacher-model directory relative to `-w` (or to an absolute path) to initialize the waveform generator and embedding setter from that model. Set it to `"average"` to initialize them with the element-wise mean of every discovered teacher model. The teacher binaries must use the supported Beatrice model version and identical network layouts.
+
+既定の `generator_init_mode` は `"pretrained"` で、従来どおり `pretrained_file` から初期化します。`"teacher"` を指定した場合は、`generator_init_model` に `-w` からの相対パス（または絶対パス）で教師モデルのディレクトリを指定すると、そのモデルの waveform generator と embedding setter を初期値として使用します。`"average"` を指定した場合は、検出されたすべての教師モデルの対応する値の要素ごとの平均を初期値として使用します。教師バイナリはサポート対象の Beatrice モデルバージョンであり、ネットワーク構造が同一である必要があります。
+
+```json
+{
+  "generator_init_mode": "teacher",
+  "generator_init_model": "paraphernalia_000-tatoeba-yomi_00010000"
+}
+```
+
+```json
+{
+  "generator_init_mode": "average"
+}
+```
+
 At each `save_interval`, the distiller writes a training checkpoint and a `paraphernalia_distilled_<step>` directory. The latter contains the inference `.bin` files and a TOML file. The output TOML combines the original teacher voice sections in the same discovery order as the distilled speaker embeddings, including voice descriptions, average pitches, and portraits where their files are available.
 
 各 `save_interval` で、distiller は学習チェックポイントと `paraphernalia_distilled_<step>` ディレクトリを書き出します。後者には推論用の `.bin` ファイルと TOML ファイルが含まれます。出力 TOML には、蒸留された話者埋め込みと同じ検出順で元の教師ボイスのセクションが統合され、利用可能な場合はボイスの説明、平均ピッチ、ポートレートも含まれます。

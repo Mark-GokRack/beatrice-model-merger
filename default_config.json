@@ -29,6 +29,8 @@
   "vq_init_from_bin": true,
   "vq_init_max_files": 128,
   "vq_init_wav_length": 16000,
+  "generator_init_mode": "pretrained",
+  "generator_init_model": null,
   "training_time_vq": "none",
   "floor_noise_level": 0.001,
   "pitch_bins": 448,
