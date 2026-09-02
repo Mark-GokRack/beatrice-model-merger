@@ -2,10 +2,10 @@
 
 ## Abstract / 概要
 
-This project trains one multi-speaker student model from source audio and one or more Beatrice teacher models.  
+This project trains one multi-speaker student model from source audio and one or more Beatrice 2.0.0-rc.0 teacher models.  
 Teacher outputs are generated on demand from the teacher `.bin` files, so no pre-rendered target audio is required.
 
-このプロジェクトは、ソース音声と 1 つ以上の Beatrice 教師モデルから、複数話者に対応する 1 つの生徒モデルを学習します。  
+このプロジェクトは、ソース音声と複数の [Beatrice](https://prj-beatrice.com/) 2.0.0-rc.0 版の 教師モデルから、複数話者に対応する 1 つの生徒モデルを学習します。  
 教師の出力は教師 `.bin` ファイルから必要に応じて生成されるため、事前にレンダリングしたターゲット音声は不要です。
 
 This project is experimental, and does not guarantee the quality of the generated student models.
@@ -41,7 +41,7 @@ weights/
 
 Each source waveform is converted by every teacher voice with a randomly selected formant shift and four VQ neighbours. The selected value is passed to both the teacher and the student's formant embedding, so the generated output remains an aligned training target. The conversion is reset per waveform.
 
-各ソース波形は、ランダムに選ばれたフォルマントシフトと VQ 近傍数 4 を使用して、すべての教師ボイスで変換されます。選ばれた値は教師と生徒の両方のフォルマント埋め込みに渡されるため、生成された出力は整合した学習ターゲットとして維持されます。変換は波形ごとにリセットされます。
+各ソース波形はランダムに選ばれたフォルマントシフトと VQ 近傍数 4 を使用して、すべての教師ボイスで変換されます。選ばれた値は教師と生徒の両方のフォルマント埋め込みに渡されるため、生成された出力は整合した学習ターゲットとして維持されます。変換は波形ごとにリセットされます。
 
 ## Dynamic Teacher Inference / 動的な教師推論
 
