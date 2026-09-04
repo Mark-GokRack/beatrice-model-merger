@@ -754,9 +754,11 @@ def main() -> None:
         h.augmentation_lpf_probability,
         h.augmentation_lpf_cutoff_freq_candidates,
     )
-    loader_workers = 0 if os.name == "nt" else min(h.num_workers, os.cpu_count() or 1)
-    if os.name == "nt" and h.num_workers != 0:
-        print("Windows uses num_workers=0 because teacher inference datasets cannot be spawned safely.")
+    # The dataset performs CUDA teacher inference while producing each target.
+    # DataLoader subprocesses cannot safely own that CUDA context.
+    loader_workers = 0
+    if h.num_workers != 0:
+        print("Using num_workers=0 because teacher inference must run in the training process.")
     loader = DataLoader(
         dataset,
         batch_size=h.batch_size,
