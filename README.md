@@ -99,6 +99,13 @@ At each `save_interval`, the distiller writes a training checkpoint and a `parap
 
 各 `save_interval` で、distiller は学習チェックポイントと `paraphernalia_distilled_<step>` ディレクトリを書き出します。後者には推論用の `.bin` ファイルと TOML ファイルが含まれます。出力 TOML には、蒸留された話者埋め込みと同じ検出順で元の教師ボイスのセクションが統合され、利用可能な場合はボイスの説明、平均ピッチ、ポートレートも含まれます。
 
+## Third-party Libraries and Licenses
+
+This project uses the following third-party libraries as Git submodules  
+このプロジェクトでは、以下のサードパーティライブラリを Git サブモジュールとして使用しています
+
+- [Beatrice-trainer](https://huggingface.co/fierce-cats/beatrice-trainer) : [MIT License](https://huggingface.co/fierce-cats/beatrice-trainer/blob/main/LICENSE)
+
 ## Notes / 注釈
 
 - Training feeds each source waveform to the student and uses the teacher's generated waveform as its target, so it learns the actual conversion task rather than self-reconstruction from pseudo voices.
