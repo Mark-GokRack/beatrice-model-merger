@@ -16,7 +16,6 @@ dependencies = [
     "tensorboard>=2",
     "soundfile>=0.11",
     "pyworld>=0.3.2",
-    "pybind11>=2.10",
     "setuptools<81"
 ]
 

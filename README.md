@@ -39,99 +39,24 @@ weights/
     ...
 ```
 
-Each source waveform is converted by every teacher voice with a randomly selected formant shift and four VQ neighbours. The selected value is passed to both the teacher and the student's formant embedding, so the generated output remains an aligned training target. The conversion is reset per waveform.
+Each source waveform is converted by every teacher voice with a randomly selected formant shift and four VQ neighbours. The selected value is passed to both the teacher and the student's formant embedding, so the generated output remains an aligned training target.
 
-各ソース波形はランダムに選ばれたフォルマントシフトと VQ 近傍数 4 を使用して、すべての教師ボイスで変換されます。選ばれた値は教師と生徒の両方のフォルマント埋め込みに渡されるため、生成された出力は整合した学習ターゲットとして維持されます。変換は波形ごとにリセットされます。
+各ソース波形はランダムに選ばれたフォルマントシフトと VQ 近傍数 4 を使用して、すべての教師ボイスで変換されます。選ばれた値は教師と生徒の両方のフォルマント埋め込みに渡されるため、生成された出力は整合した学習ターゲットとして維持されます。
 
-## Dynamic Teacher Inference / 動的な教師推論
+## PyTorch Teacher Inference / PyTorch による教師推論
 
-`native/beatrice_inference.cc` is a pybind11 binding to the official
-`beatrice.lib` C API supplied by the `beatrice-vst` submodule. It supports
-Beatrice `2.0.0-rc.0` paraphernalia directories, including models containing
-multiple voices.
+Teacher inference uses `beatrice_distiller.PyTorchConverter`; it has no dependency on `libbeatrice`, pybind11, a C++ compiler, or `beatrice-vst`. `phone_extractor` and `pitch_estimator` are loaded from the configured `beatrice-trainer/assets/pretrained/*.pt` checkpoints. The remaining model parameters are reconstructed from each teacher's inference `.bin` files.
 
-`native/beatrice_inference.cc` は、`beatrice-vst` サブモジュールから提供される公式
-`beatrice.lib` C API の pybind11 バインディングです。複数のボイスを含むモデルを含め、
-Beatrice `2.0.0-rc.0` の paraphernalia ディレクトリをサポートします。
+教師推論には `beatrice_distiller.PyTorchConverter` を使用します。`phone_extractor` と `pitch_estimator` は設定された `beatrice-trainer/assets/pretrained/*.pt` から読み込み、残りのパラメータは各教師の推論用 `.bin` ファイルから復元します。
 
-The build downloads the platform-specific official library to
-`beatrice-vst/lib/beatricelib/` when it is not already present. Windows uses
-`beatrice.lib`; Unix platforms use `libbeatrice.a`. Install CMake, a C++20
-compiler compatible with the library, and pybind11 in the Python environment
-used by the distiller. On Windows, build it from this directory as follows:
-
-ビルド時に、プラットフォーム固有の公式ライブラリがまだ存在しない場合は
-`beatrice-vst/lib/beatricelib/` にダウンロードされます。Windows では
-`beatrice.lib`、Unix プラットフォームでは `libbeatrice.a` を使用します。CMake、
-ライブラリと互換性のある C++20 コンパイラー、pybind11 を distiller が使用する Python
-環境にインストールしてください。Windows では、このディレクトリから次のようにビルドします。
+`PyTorchConverter.process()` はオフライン推論です。入力の末尾は 160 sample 単位にゼロ埋めされ、入力フレームごとに 240 sample を返します。native runtime との出力を比較するには、native extension を別途保存したうえで次を実行します。
 
 ```powershell
-python -m pip install pybind11
-cmake -S native -B native/build -A x64 -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
-cmake --build native/build --config Release
+python -m beatrice_distiller.compare_inference weights/teacher_a source.wav `
+  --native-extension-dir path/to/legacy/extension --speaker 0 --output-wav pytorch.wav
 ```
 
-On macOS, use the default Unix generator:
-
-macOS では、既定の Unix ジェネレーターを使用します。
-
-```bash
-python -m pip install pybind11
-cmake -S native -B native/build -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
-cmake --build native/build --config Release
-```
-
-The CMake project selects `/MT` automatically on Windows because it must match
-the official Windows library. The macOS archive is downloaded with its native
-Apple archive index. On Linux and other non-Apple Unix platforms, provide a
-compatible `libbeatrice.a` because the distributed archive is macOS arm64:
-
-CMake プロジェクトは、公式 Windows ライブラリと一致させる必要があるため、Windows では
-自動的に `/MT` を選択します。macOS のアーカイブは、そのネイティブな Apple アーカイブ
-インデックスを使用してダウンロードされます。配布されるアーカイブは macOS arm64 向けのため、
-Linux および Apple 以外の Unix プラットフォームでは、互換性のある `libbeatrice.a` を
-指定してください。
-
-```bash
-cmake -S native -B native/build \
-  -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
-  -DBEATRICE_LIBRARY=/path/to/libbeatrice.a
-cmake --build native/build --config Release
-```
-
-The Unix build adds a static archive index where needed. The resulting
-`_beatrice_inference` extension is written directly into this directory. Use a
-separate `Converter` instance for each teacher model because each instance owns
-its streaming inference state.
-
-Unix のビルドでは、必要に応じて静的アーカイブのインデックスが追加されます。生成された
-`_beatrice_inference` 拡張モジュールは、このディレクトリに直接書き込まれます。各インスタンスが
-ストリーミング推論状態を保持するため、教師モデルごとに別の `Converter` インスタンスを使用してください。
-
-```python
-from pathlib import Path
-
-import numpy as np
-from beatrice_inference import Converter
-
-teacher = Converter()
-teacher.load_model(Path("weights/teacher_paraphernalia"))
-teacher.set_target_speaker(0)
-teacher.set_formant_shift(0.0)
-teacher.set_pitch_shift(0.0)
-teacher.set_vq_num_neighbors(0)
-teacher.reset()
-
-# mono_source_16k is a one-dimensional np.float32 array at 16 kHz.
-teacher_output_24k = teacher.process(mono_source_16k)
-```
-
-`process()` preserves the native streaming context. It zero-pads the final
-partial 160-sample input hop and returns 240 samples for every processed hop.
-The output therefore contains the inference engine's startup/tail delay. The
-distiller calls `process()` once per source waveform, keeps this padding, and
-trims the source/target pair to their shared frame count before training.
+このスクリプトは最適な $\pm480$ sample の遅延を選び、波形 MAE/RMSE、signal-to-error ratio、log-STFT magnitude MAE を表示します。vocoder のノイズおよび初期位相は確率的なので、波形完全一致ではなく、これらの分布・スペクトル指標で評価してください。
 
 `process()` はネイティブのストリーミングコンテキストを保持します。最後の 160 サンプル未満の
 入力ホップはゼロパディングされ、処理された各ホップに対して 240 サンプルを返します。したがって、

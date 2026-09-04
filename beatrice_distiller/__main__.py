@@ -187,9 +187,9 @@ class DistillationDataset(Dataset):
         converter_key = (model_dir, teacher_speaker_id)
         converter = self._converters.get(converter_key)
         if converter is None:
-            from beatrice_inference import Converter
+            from beatrice_distiller.pytorch_inference import PyTorchConverter
 
-            converter = Converter()
+            converter = PyTorchConverter()
             converter.load_model(model_dir)
             converter.set_target_speaker(teacher_speaker_id)
             converter.set_vq_num_neighbors(self.vq_topk)
