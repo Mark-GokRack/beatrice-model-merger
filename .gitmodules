@@ -1,6 +1,3 @@
 [submodule "beatrice-trainer"]
 	path = beatrice-trainer
 	url = https://huggingface.co/fierce-cats/beatrice-trainer
-[submodule "beatrice-vst"]
-	path = beatrice-vst
-	url = https://github.com/prj-beatrice/beatrice-vst.git

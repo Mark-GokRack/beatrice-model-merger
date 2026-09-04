@@ -187,9 +187,9 @@ class DistillationDataset(Dataset):
         converter_key = (model_dir, teacher_speaker_id)
         converter = self._converters.get(converter_key)
         if converter is None:
-            from beatrice_inference import Converter
+            from beatrice_distiller.pytorch_inference import PyTorchConverter
 
-            converter = Converter()
+            converter = PyTorchConverter()
             converter.load_model(model_dir)
             converter.set_target_speaker(teacher_speaker_id)
             converter.set_vq_num_neighbors(self.vq_topk)
@@ -754,9 +754,11 @@ def main() -> None:
         h.augmentation_lpf_probability,
         h.augmentation_lpf_cutoff_freq_candidates,
     )
-    loader_workers = 0 if os.name == "nt" else min(h.num_workers, os.cpu_count() or 1)
-    if os.name == "nt" and h.num_workers != 0:
-        print("Windows uses num_workers=0 because teacher inference datasets cannot be spawned safely.")
+    # The dataset performs CUDA teacher inference while producing each target.
+    # DataLoader subprocesses cannot safely own that CUDA context.
+    loader_workers = 0
+    if h.num_workers != 0:
+        print("Using num_workers=0 because teacher inference must run in the training process.")
     loader = DataLoader(
         dataset,
         batch_size=h.batch_size,
