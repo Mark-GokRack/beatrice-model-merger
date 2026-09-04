@@ -99,6 +99,12 @@ At each `save_interval`, the distiller writes a training checkpoint and a `parap
 
 各 `save_interval` で、distiller は学習チェックポイントと `paraphernalia_distilled_<step>` ディレクトリを書き出します。後者には推論用の `.bin` ファイルと TOML ファイルが含まれます。出力 TOML には、蒸留された話者埋め込みと同じ検出順で元の教師ボイスのセクションが統合され、利用可能な場合はボイスの説明、平均ピッチ、ポートレートも含まれます。
 
+## Project License
+
+This repository is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.  
+
+このリポジトリは MIT ライセンスの下で公開されています。詳細は [LICENSE](LICENSE) ファイルをご覧ください。
+
 ## Third-party Libraries and Licenses
 
 This project uses the following third-party libraries as Git submodules  
